@@ -1,122 +1,149 @@
 import { create } from "zustand";
 import {
   QuantumState,
+  applyGate,
   applySingleQubitGate,
-  PauliX,
-  PauliY,
-  PauliZ,
-  Hadamard,
-  SGate,
-  TGate,
-  RX,
-  RY,
-  RZ,
-  type Gate,
 } from "@/engine";
+import { getGateDef } from "./gateLibrary";
 
-/** A gate paired with the SO(3) rotation it induces on the Bloch vector. */
-export interface GateDef {
-  symbol: string;
-  name: string;
-  gate: Gate;
-  /** Rotation axis in physics Bloch coordinates. */
-  axis: [number, number, number];
-  /** Rotation angle in radians. */
-  angle: number;
-  tone?: "default" | "phase";
-}
-
-export const fixedGates: GateDef[] = [
-  { symbol: "X", name: "Pauli-X", gate: PauliX, axis: [1, 0, 0], angle: Math.PI },
-  { symbol: "Y", name: "Pauli-Y", gate: PauliY, axis: [0, 1, 0], angle: Math.PI },
-  { symbol: "Z", name: "Pauli-Z", gate: PauliZ, axis: [0, 0, 1], angle: Math.PI, tone: "phase" },
-  {
-    symbol: "H",
-    name: "Hadamard",
-    gate: Hadamard,
-    axis: [Math.SQRT1_2, 0, Math.SQRT1_2],
-    angle: Math.PI,
-  },
-  { symbol: "S", name: "Phase (S)", gate: SGate, axis: [0, 0, 1], angle: Math.PI / 2, tone: "phase" },
-  { symbol: "T", name: "π/8 (T)", gate: TGate, axis: [0, 0, 1], angle: Math.PI / 4, tone: "phase" },
-];
-
-export type RotationAxis = "x" | "y" | "z";
-
-const rotationBuilders: Record<
-  RotationAxis,
-  { make: (a: number) => Gate; axis: [number, number, number] }
-> = {
-  x: { make: RX, axis: [1, 0, 0] },
-  y: { make: RY, axis: [0, 1, 0] },
-  z: { make: RZ, axis: [0, 0, 1] },
-};
+export type Register = "single" | "two";
 
 interface GatesState {
-  qubit: QuantumState;
+  register: Register;
+  singleState: QuantumState;
+  twoState: QuantumState;
+
+  selectedId: string;
+  /** Parameter for the selected rotation gate (radians). */
+  angle: number;
+  /** Which qubit a single-qubit gate acts on within the two-qubit register. */
+  target: 0 | 1;
+
   history: string[];
-  /** The rotation induced by the most recent gate, for scene animation. */
+
+  /** Rotation induced by the most recent single-qubit gate (for Bloch anim). */
   lastRotation: { axis: [number, number, number]; angle: number } | null;
   rotationToken: number;
+  /** Rising counter watched by the two-qubit scene to animate a joint update. */
+  jointToken: number;
 
-  applyGate: (def: GateDef) => void;
-  applyRotation: (axis: RotationAxis, angle: number) => void;
+  select: (id: string) => void;
+  setAngle: (a: number) => void;
+  setRegister: (r: Register) => void;
+  setTarget: (t: 0 | 1) => void;
+  apply: () => void;
   undo: () => void;
   reset: () => void;
 }
 
-const undoStack: QuantumState[] = [];
+const singleUndo: QuantumState[] = [];
+const twoUndo: QuantumState[] = [];
+
+function label(id: string, angle: number, target: 0 | 1, register: Register): string {
+  const def = getGateDef(id);
+  const base = def.parametric
+    ? `${def.symbol}(${Math.round((angle * 180) / Math.PI)}°)`
+    : def.symbol;
+  if (def.arity === 1 && register === "two") return `${base}·q${target}`;
+  return base;
+}
 
 export const useGatesStore = create<GatesState>((set) => ({
-  qubit: QuantumState.zero(1),
+  register: "single",
+  singleState: QuantumState.zero(1),
+  twoState: QuantumState.zero(2),
+  selectedId: "H",
+  angle: Math.PI / 2,
+  target: 0,
   history: [],
   lastRotation: null,
   rotationToken: 0,
+  jointToken: 0,
 
-  applyGate: (def) =>
+  select: (id) =>
     set((s) => {
-      undoStack.push(s.qubit);
+      const def = getGateDef(id);
       return {
-        qubit: applySingleQubitGate(s.qubit, def.gate, 0),
-        history: [...s.history, def.symbol],
-        lastRotation: { axis: def.axis, angle: def.angle },
-        rotationToken: s.rotationToken + 1,
+        selectedId: id,
+        // Two-qubit gates require the two-qubit register.
+        register: def.arity === 2 ? "two" : s.register,
+        angle: def.parametric ? def.defaultAngle ?? s.angle : s.angle,
       };
     }),
 
-  applyRotation: (axis, angle) =>
+  setAngle: (a) => set({ angle: a }),
+  setRegister: (register) => set({ register }),
+  setTarget: (target) => set({ target }),
+
+  apply: () =>
     set((s) => {
-      const builder = rotationBuilders[axis];
-      undoStack.push(s.qubit);
-      const deg = Math.round((angle * 180) / Math.PI);
+      const def = getGateDef(s.selectedId);
+      const gate = def.make(s.angle);
+      const hist = [...s.history, label(s.selectedId, s.angle, s.target, s.register)];
+
+      if (def.arity === 2) {
+        twoUndo.push(s.twoState);
+        return {
+          twoState: applyGate(s.twoState, gate, [0, 1]),
+          register: "two",
+          jointToken: s.jointToken + 1,
+          history: hist,
+        };
+      }
+
+      // Single-qubit gate.
+      if (s.register === "single") {
+        singleUndo.push(s.singleState);
+        return {
+          singleState: applySingleQubitGate(s.singleState, gate, 0),
+          lastRotation: def.bloch
+            ? { axis: def.bloch.axis, angle: def.bloch.angle(s.angle) }
+            : null,
+          rotationToken: s.rotationToken + 1,
+          history: hist,
+        };
+      }
+
+      twoUndo.push(s.twoState);
       return {
-        qubit: applySingleQubitGate(s.qubit, builder.make(angle), 0),
-        history: [...s.history, `R${axis}(${deg}°)`],
-        lastRotation: { axis: builder.axis, angle },
-        rotationToken: s.rotationToken + 1,
+        twoState: applySingleQubitGate(s.twoState, gate, s.target),
+        jointToken: s.jointToken + 1,
+        history: hist,
       };
     }),
 
   undo: () =>
     set((s) => {
-      const previous = undoStack.pop();
-      if (!previous) return s;
+      if (s.register === "single") {
+        const prev = singleUndo.pop();
+        if (!prev) return s;
+        return {
+          singleState: prev,
+          lastRotation: null,
+          rotationToken: s.rotationToken + 1,
+          history: s.history.slice(0, -1),
+        };
+      }
+      const prev = twoUndo.pop();
+      if (!prev) return s;
       return {
-        qubit: previous,
+        twoState: prev,
+        jointToken: s.jointToken + 1,
         history: s.history.slice(0, -1),
-        lastRotation: null,
-        rotationToken: s.rotationToken + 1,
       };
     }),
 
   reset: () =>
     set((s) => {
-      undoStack.length = 0;
+      singleUndo.length = 0;
+      twoUndo.length = 0;
       return {
-        qubit: QuantumState.zero(1),
-        history: [],
+        singleState: QuantumState.zero(1),
+        twoState: QuantumState.zero(2),
         lastRotation: null,
         rotationToken: s.rotationToken + 1,
+        jointToken: s.jointToken + 1,
+        history: [],
       };
     }),
 }));

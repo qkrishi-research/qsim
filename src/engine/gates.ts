@@ -127,6 +127,41 @@ export const SWAP = gate("Swap", "SWAP", 2, [
   [ZERO, ZERO, ZERO, ONE],
 ]);
 
+/**
+ * Lifts a single-qubit gate to its controlled two-qubit form. The control is
+ * the more-significant qubit (qubit 0); the gate acts on the target (qubit 1)
+ * only when the control is |1⟩.
+ */
+export function controlled(u: Gate): Gate {
+  const m = u.matrix;
+  return gate(`Controlled-${u.name}`, `C${u.symbol}`, 2, [
+    [ONE, ZERO, ZERO, ZERO],
+    [ZERO, ONE, ZERO, ZERO],
+    [ZERO, ZERO, m[0][0], m[0][1]],
+    [ZERO, ZERO, m[1][0], m[1][1]],
+  ]);
+}
+
+/** Controlled phase: applies a relative phase λ to |11⟩ only. CZ is λ = π. */
+export function CPhase(lambda: number): Gate {
+  return gate("Controlled-Phase", "CP", 2, [
+    [ONE, ZERO, ZERO, ZERO],
+    [ZERO, ONE, ZERO, ZERO],
+    [ZERO, ZERO, ONE, ZERO],
+    [ZERO, ZERO, ZERO, expi(lambda)],
+  ]);
+}
+
+export function CRX(theta: number): Gate {
+  return controlled(RX(theta));
+}
+export function CRY(theta: number): Gate {
+  return controlled(RY(theta));
+}
+export function CRZ(theta: number): Gate {
+  return controlled(RZ(theta));
+}
+
 /** Convenience registry of the parameter-free single-qubit gates. */
 export const singleQubitGates: Record<string, Gate> = {
   I: Identity,

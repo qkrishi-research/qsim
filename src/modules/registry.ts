@@ -58,8 +58,8 @@ export const modules: LabModule[] = [
   },
   {
     id: "single-gates",
-    title: "Quantum Gates",
-    summary: "Apply gates and watch each rotation on the Bloch sphere.",
+    title: "Gate Laboratory",
+    summary: "Explore every gate: matrix, circuit, transformation and evolution.",
     category: "gates",
     icon: SlidersHorizontal,
     status: "available",

@@ -13,6 +13,9 @@ export type Phase = "predict" | "experiment" | "measure";
 interface SuperpositionState {
   qubit: QuantumState;
 
+  /** The classical bit shown alongside for contrast — always exactly 0 or 1. */
+  classicalBit: 0 | 1;
+
   /** The user's committed prediction for P(1), in [0, 1]. */
   prediction: number;
   predictionCommitted: boolean;
@@ -28,6 +31,7 @@ interface SuperpositionState {
 
   phase: Phase;
 
+  flipClassical: () => void;
   setPrediction: (p: number) => void;
   commitPrediction: () => void;
   setBlochAngles: (theta: number, phi: number) => void;
@@ -40,6 +44,7 @@ interface SuperpositionState {
 
 export const useSuperpositionStore = create<SuperpositionState>((set) => ({
   qubit: QuantumState.zero(1),
+  classicalBit: 0,
   prediction: 0.5,
   predictionCommitted: false,
   counts: [0, 0],
@@ -47,6 +52,9 @@ export const useSuperpositionStore = create<SuperpositionState>((set) => ({
   collapsedTo: null,
   collapseToken: 0,
   phase: "predict",
+
+  flipClassical: () =>
+    set((s) => ({ classicalBit: s.classicalBit === 0 ? 1 : 0 })),
 
   setPrediction: (p) => set({ prediction: Math.max(0, Math.min(1, p)) }),
 
@@ -102,6 +110,7 @@ export const useSuperpositionStore = create<SuperpositionState>((set) => ({
   reset: () =>
     set({
       qubit: QuantumState.zero(1),
+      classicalBit: 0,
       prediction: 0.5,
       predictionCommitted: false,
       counts: [0, 0],

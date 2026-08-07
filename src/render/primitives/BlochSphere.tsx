@@ -19,6 +19,8 @@ interface BlochSphereProps {
   showProjections?: boolean;
   /** Draw the polar (θ) and azimuth (φ) angle arcs. */
   showAngles?: boolean;
+  /** Leave a fading trajectory trail behind the state tip. */
+  trail?: boolean;
   /**
    * Optional live tip position (Three coords) read every frame, overriding the
    * damped `vector`. Used to animate a gate rotation along its true geodesic.
@@ -35,6 +37,13 @@ export function blochToThree(v: BlochVector, r = 1): THREE.Vector3 {
 
 const toThree = blochToThree;
 
+// ── Palette tuned for a white studio: recessive sphere, legible axes ───────
+const SPHERE_FILL = "#eef2f8";
+const GRID_COLOR = "#ccd6e6";
+const EQUATOR_COLOR = "#9aa6bd";
+const AXIS_COLOR = "#586172";
+const AXIS_TICK = "#8a94a6";
+
 export function BlochSphere({
   vector,
   radius = 1,
@@ -43,6 +52,7 @@ export function BlochSphere({
   showLabels = true,
   showProjections = false,
   showAngles = false,
+  trail = false,
   follow,
   onChange,
 }: BlochSphereProps) {
@@ -59,10 +69,55 @@ export function BlochSphere({
   const target = useMemo(() => toThree(vector, radius), [vector, radius]);
   const tip = useRef<THREE.Group>(null);
 
+  // Trajectory trail — a light polyline fading to the white background.
+  const trailLine = useMemo(() => {
+    if (!trail) return null;
+    const LEN = 96;
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array(LEN * 3);
+    const colors = new Float32Array(LEN * 3);
+    const accent = new THREE.Color(color);
+    const bg = new THREE.Color("#fbfcfe");
+    for (let i = 0; i < LEN; i++) {
+      const t = i / (LEN - 1);
+      const c = bg.clone().lerp(accent, t * t);
+      colors[i * 3] = c.r;
+      colors[i * 3 + 1] = c.g;
+      colors[i * 3 + 2] = c.b;
+    }
+    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    const mat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.85,
+    });
+    return new THREE.Line(geo, mat);
+  }, [trail, color]);
+  const trailInit = useRef(false);
+
   useFrame((_, dt) => {
-    if (tip.current) {
-      const tgt = follow?.current ?? target;
-      damp3(tip.current.position, tgt, 14, Math.min(dt, 0.1));
+    const tgt = follow?.current ?? target;
+    if (tip.current) damp3(tip.current.position, tgt, 14, Math.min(dt, 0.1));
+
+    if (trailLine && tip.current) {
+      const pos = trailLine.geometry.attributes.position.array as Float32Array;
+      const p = tip.current.position;
+      if (!trailInit.current) {
+        for (let i = 0; i < pos.length; i += 3) {
+          pos[i] = p.x;
+          pos[i + 1] = p.y;
+          pos[i + 2] = p.z;
+        }
+        trailInit.current = true;
+      } else {
+        pos.copyWithin(0, 3);
+        const last = pos.length - 3;
+        pos[last] = p.x;
+        pos[last + 1] = p.y;
+        pos[last + 2] = p.z;
+      }
+      trailLine.geometry.attributes.position.needsUpdate = true;
     }
   });
 
@@ -85,69 +140,67 @@ export function BlochSphere({
     }
   );
 
-  const axisColor = "#c3cbd9";
-  const ringColor = "#d3d9e4";
+  const l = radius * 1.28; // axis half-length
 
   return (
     <group>
-      {/* Translucent shell */}
-      <mesh>
-        <sphereGeometry args={[radius, 64, 48]} />
-        <meshPhysicalMaterial
-          color="#ffffff"
+      {/* Soft volume fill — light enough to stay recessive, solid enough to read */}
+      <mesh renderOrder={-2}>
+        <sphereGeometry args={[radius * 0.998, 64, 48]} />
+        <meshStandardMaterial
+          color={SPHERE_FILL}
           transparent
-          opacity={0.06}
-          roughness={0.15}
+          opacity={0.4}
+          roughness={0.85}
           metalness={0}
-          transmission={0.6}
-          thickness={0.5}
           depthWrite={false}
+          polygonOffset
+          polygonOffsetFactor={1}
         />
       </mesh>
 
-      {/* Great circles: equator and two meridians */}
-      <mesh rotation={[Math.PI / 2, 0, 0]}>
-        <torusGeometry args={[radius, 0.004, 8, 128]} />
-        <meshBasicMaterial color={ringColor} />
-      </mesh>
-      <mesh>
-        <torusGeometry args={[radius, 0.004, 8, 128]} />
-        <meshBasicMaterial color={ringColor} />
-      </mesh>
-      <mesh rotation={[0, Math.PI / 2, 0]}>
-        <torusGeometry args={[radius, 0.004, 8, 128]} />
-        <meshBasicMaterial color={ringColor} />
-      </mesh>
+      <SphereGrid radius={radius} />
 
-      {/* Axes (Three coords): Y = |0⟩/|1⟩, X = |+⟩/|−⟩, Z = |i⟩/|−i⟩ */}
-      <Axis a={[0, -radius * 1.25, 0]} b={[0, radius * 1.25, 0]} color={axisColor} />
-      <Axis a={[-radius * 1.25, 0, 0]} b={[radius * 1.25, 0, 0]} color={axisColor} />
-      <Axis a={[0, 0, -radius * 1.25]} b={[0, 0, radius * 1.25]} color={axisColor} />
+      {/* Coordinate axes with arrowheads — high contrast against the shell */}
+      <Axis3D dir="y" length={l} color={AXIS_COLOR} />
+      <Axis3D dir="x" length={l} color={AXIS_COLOR} />
+      <Axis3D dir="z" length={l} color={AXIS_COLOR} />
+
+      {trailLine && <primitive object={trailLine} />}
 
       {showProjections && <Projection target={target} color={color} />}
       {showAngles && <AngleArcs target={target} radius={radius} />}
 
-      {/* State vector and tip marker */}
-      <Arrow target={target} follow={follow} color={color} />
+      {/* State vector — the hero: bold, saturated, with a bright tip */}
+      <Arrow
+        target={target}
+        follow={follow}
+        color={color}
+        shaftRadius={0.026}
+        headLength={0.19}
+        headRadius={0.075}
+      />
       <group ref={tip}>
         <mesh castShadow>
-          <sphereGeometry args={[0.05, 24, 24]} />
-          <meshStandardMaterial color={color} roughness={0.3} metalness={0.1} />
+          <sphereGeometry args={[0.062, 28, 28]} />
+          <meshStandardMaterial
+            color={color}
+            roughness={0.28}
+            metalness={0.15}
+            emissive={color}
+            emissiveIntensity={0.18}
+          />
         </mesh>
       </group>
 
       {showLabels && (
         <>
-          <Label position={[0, radius * 1.42, 0]} tone="state">
-            |0⟩
-          </Label>
-          <Label position={[0, -radius * 1.42, 0]} tone="state">
-            |1⟩
-          </Label>
-          <Label position={[radius * 1.4, 0, 0]}>|+⟩</Label>
-          <Label position={[-radius * 1.42, 0, 0]}>|−⟩</Label>
-          <Label position={[0, 0, radius * 1.4]}>|i⟩</Label>
-          <Label position={[0, 0, -radius * 1.46]}>|−i⟩</Label>
+          <PoleLabel position={[0, radius * 1.44, 0]}>|0⟩</PoleLabel>
+          <PoleLabel position={[0, -radius * 1.44, 0]}>|1⟩</PoleLabel>
+          <Label position={[radius * 1.42, 0, 0]}>|+⟩</Label>
+          <Label position={[-radius * 1.44, 0, 0]}>|−⟩</Label>
+          <Label position={[0, 0, radius * 1.42]}>|i⟩</Label>
+          <Label position={[0, 0, -radius * 1.48]}>|−i⟩</Label>
         </>
       )}
 
@@ -167,16 +220,104 @@ export function BlochSphere({
   );
 }
 
-function Axis({
-  a,
-  b,
+/** Emphasized pole label with a subtle chip for readability against the grid. */
+function PoleLabel({
+  position,
+  children,
+}: {
+  position: [number, number, number];
+  children: React.ReactNode;
+}) {
+  return (
+    <Label position={position} tone="state" className="text-[14px]">
+      {children}
+    </Label>
+  );
+}
+
+/** A globe of latitude/longitude lines with an emphasized equator. */
+function SphereGrid({ radius }: { radius: number }) {
+  const { parallels, meridians, equator } = useMemo(() => {
+    const circle = (
+      kind: "parallel" | "meridian",
+      param: number
+    ): [number, number, number][] => {
+      const pts: [number, number, number][] = [];
+      const segs = 96;
+      for (let i = 0; i <= segs; i++) {
+        const a = (i / segs) * Math.PI * 2;
+        if (kind === "parallel") {
+          pts.push([
+            radius * Math.cos(param) * Math.cos(a),
+            radius * Math.sin(param),
+            radius * Math.cos(param) * Math.sin(a),
+          ]);
+        } else {
+          pts.push([
+            radius * Math.sin(a) * Math.cos(param),
+            radius * Math.cos(a),
+            radius * Math.sin(a) * Math.sin(param),
+          ]);
+        }
+      }
+      return pts;
+    };
+    const d2r = Math.PI / 180;
+    return {
+      equator: circle("parallel", 0),
+      parallels: [-60, -30, 30, 60].map((lat) => circle("parallel", lat * d2r)),
+      meridians: [0, 30, 60, 90, 120, 150].map((az) =>
+        circle("meridian", az * d2r)
+      ),
+    };
+  }, [radius]);
+
+  return (
+    <group renderOrder={-1}>
+      {parallels.map((pts, i) => (
+        <Line key={`p${i}`} points={pts} color={GRID_COLOR} lineWidth={0.8} transparent opacity={0.5} />
+      ))}
+      {meridians.map((pts, i) => (
+        <Line key={`m${i}`} points={pts} color={GRID_COLOR} lineWidth={0.8} transparent opacity={0.5} />
+      ))}
+      <Line points={equator} color={EQUATOR_COLOR} lineWidth={1.4} />
+    </group>
+  );
+}
+
+/** A single coordinate axis: a shaft through the origin capped by arrowheads. */
+function Axis3D({
+  dir,
+  length,
   color,
 }: {
-  a: [number, number, number];
-  b: [number, number, number];
+  dir: "x" | "y" | "z";
+  length: number;
   color: string;
 }) {
-  return <Line points={[a, b]} color={color} lineWidth={1.25} />;
+  const rotation: [number, number, number] =
+    dir === "y"
+      ? [0, 0, 0]
+      : dir === "x"
+        ? [0, 0, -Math.PI / 2]
+        : [Math.PI / 2, 0, 0];
+
+  return (
+    <group rotation={rotation}>
+      <mesh>
+        <cylinderGeometry args={[0.006, 0.006, length * 2, 8]} />
+        <meshBasicMaterial color={color} />
+      </mesh>
+      <mesh position={[0, length, 0]}>
+        <coneGeometry args={[0.032, 0.1, 16]} />
+        <meshBasicMaterial color={color} />
+      </mesh>
+      <mesh position={[0, -length, 0]} rotation={[Math.PI, 0, 0]}>
+        <coneGeometry args={[0.032, 0.1, 16]} />
+        <meshBasicMaterial color={AXIS_TICK} />
+      </mesh>
+    </group>
+  );
 }
 
 /** Dashed decomposition of the state vector into its equatorial projection. */
@@ -200,12 +341,12 @@ function Projection({
               [p.x, 0, p.z],
             ]}
             color={color}
-            lineWidth={1}
+            lineWidth={1.25}
             dashed
-            dashSize={0.06}
+            dashSize={0.07}
             gapSize={0.05}
             transparent
-            opacity={0.55}
+            opacity={0.6}
           />
           <Line
             points={[
@@ -213,16 +354,16 @@ function Projection({
               [target.x, target.y, target.z],
             ]}
             color={color}
-            lineWidth={1}
+            lineWidth={1.25}
             dashed
-            dashSize={0.06}
+            dashSize={0.07}
             gapSize={0.05}
             transparent
-            opacity={0.55}
+            opacity={0.6}
           />
           <mesh position={[p.x, 0, p.z]}>
-            <sphereGeometry args={[0.022, 16, 16]} />
-            <meshBasicMaterial color={color} transparent opacity={0.7} />
+            <sphereGeometry args={[0.026, 16, 16]} />
+            <meshBasicMaterial color={color} transparent opacity={0.75} />
           </mesh>
         </>
       )}
@@ -292,18 +433,18 @@ function AngleArcs({
         <Line
           points={arcPoints(UP_AXIS, dir, thetaR)}
           color="#1d4ed8"
-          lineWidth={1.5}
+          lineWidth={1.75}
           transparent
-          opacity={0.75}
+          opacity={0.8}
         />
       )}
       {hasAzimuth && (
         <Line
           points={arcPoints(X_AXIS, equator, phiR)}
           color="#7c3aed"
-          lineWidth={1.5}
+          lineWidth={1.75}
           transparent
-          opacity={0.7}
+          opacity={0.75}
         />
       )}
       {thetaMid && (
